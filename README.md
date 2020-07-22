@@ -1,1 +1,1 @@
-text_analysis
+Text Analysis Workshop, SSDA, July 23
