@@ -1,0 +1,361 @@
+---
+title: "Text Analysis in R"
+author: "Caleb Lucas"
+date: "7/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA)
+```
+
+## Introduction
+
+How can social scientists leverage the recent explosion of textual data to learn about this social world? This workshop will provide an introduction to a variety of quantitative methods, including dictionaries, topic modeling, and machine learning, that can be used for sentiment analysis and document exploration. Applications to multiple topics will be discussed. This workshop builds on Cleaning Messy Text Using R: How to Get Your Data Ready for Analysis to demonstrate a working research pipeline for textual data.
+
+## Acknowledgements
+
+- Some of today's content is motivated by/pulled from lectures by Shahryar Minhas (MSU) and content by Chicago's CFSS group.
+
+## Libraries
+
+```{r}
+
+# install.packages(c())
+
+library(textclean)
+library(tidytext)
+library(tidyverse)
+library(caret)
+library(textstem)
+library(textdata)
+library(wordcloud)
+library(syuzhet)
+library(lubridate)
+library(tm)
+library(caret)
+library(quanteda)
+library(readtext)
+
+```
+
+
+## Donald Trump Tweets
+
+- I collected all tweets by Donald Trump between 2012-2020 (>40,000) so we could practice on some real data. It is in the github if the dropbox link gives you trouble.
+
+```{r}
+
+trump_tweets <- read_csv("https://www.dropbox.com/s/s42m8c17xwr3lbh/realdonaldtrump_tweets.csv?dl=1")
+
+```
+
+#### Clean tweets
+
+- Replace contractions
+
+```{r}
+
+trump_tweets$text <- textclean::replace_contraction(trump_tweets$text)
+
+```
+
+- Lots of cleaning steps!
+
+```{r}
+
+trump_docs <- trump_tweets %>% 
+  # drop retweets
+  filter(!str_detect(text, "^RT")) %>%
+  # tokenize to tweets - tidytext does some work for us here
+  unnest_tokens(word, text, token = "tweets") %>%
+  # drop common words
+  filter(!word %in% stop_words$word,
+         !word %in% str_remove_all(string = stop_words$word, pattern =  "'"),
+         str_detect(word, "[a-z]")) %>%
+  # remove numbers, punc, urls, etc.
+  mutate(word = stringr::str_squish(word)) %>%
+  mutate(word = stringr::str_remove_all(word, "\\s?(f|ht)(tp)(s?)(://)([^\\.]*)[\\.|/](\\S*)")) %>%
+  mutate(word = stringr::str_remove_all(word, "[[:digit:]]")) %>%
+  mutate(word = stringr::str_remove_all(word, "#[a-z,A-Z]*")) %>%
+  mutate(word = stringr::str_remove_all(word, "@[a-z,A-Z]*")) %>%
+  mutate(word = stringr::str_remove_all(word, "[[:punct:]]")) %>%
+  mutate(word = stringr::str_remove_all(word, "\\$")) %>%
+  mutate(word = stringr::str_trim(word, side = "both")) %>%
+  filter(!word %in% c("amp","~","ー")) %>%
+  # replace empty strings with NA
+  mutate_if(is.character, list(~na_if(.,""))) %>%
+  mutate(lemma = textstem::lemmatize_words(word)) %>%
+  drop_na()
+
+```
+
+## Descriptive Analyses
+
+- Tweets over time
+
+```{r}
+
+trump_tweets %>%
+  ggplot(aes(x = date)) +
+  geom_histogram(position = "identity", bins = 9*12,  show.legend = FALSE) +
+  geom_vline(xintercept = as.numeric(ISOdatetime(2017, 1, 20, 12, 0, 0))) +
+  ggtitle("Trump's Tweets Over Time Before/After Inauguration") +
+  theme_bw()
+
+```
+
+- Get word counts
+
+```{r}
+
+trump_counts <- trump_docs %>%
+  count(lemma, sort = TRUE)
+
+```
+
+- Plot top words
+
+```{r}
+
+trump_counts %>%
+  top_n(35) %>%
+  mutate(lemma = reorder(lemma, n)) %>%
+  ggplot(aes(x = lemma, y = n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip() +
+  labs(title = "Count of Unique Lemmas in Trump's Tweets (2012-2020)") +
+  theme_bw()
+
+```
+
+- Word clouds are controversial but undeniably fun.
+
+```{r}
+
+trump_docs %>%
+  count(lemma) %>%
+  with(wordcloud(lemma, n, max.words = 50))
+
+```
+
+## Dictionary
+
+- Take a look at the AFINN dictionary
+
+```{r}
+
+afinn <- get_sentiments("afinn")
+glimpse(afinn)
+
+```
+
+- Take a look at the NRC dictionary
+
+```{r}
+
+nrc <- get_sentiments("nrc")
+glimpse(nrc)
+
+```
+
+- Take a look at the Bing dictionary
+
+```{r}
+
+bing <- get_sentiments("bing")
+glimpse(bing)
+
+```
+
+
+- Merge anger word with the Trump tweets data and inspect the resulting df and note the importance of using LEMMA, not WORD
+
+```{r}
+
+nrc_anger <- nrc %>% 
+  filter(sentiment == "anger")
+
+trump_nrc <- merge(trump_docs, nrc_anger, by.x = c('lemma'), by.y = c('word'))
+glimpse(trump_docs)
+
+```
+
+- Prepare to get sentiment using a dictionary
+
+```{r}
+
+lemma_tweets <- trump_docs %>%
+  group_by(id,date) %>%
+  summarise(tweet = paste0(lemma,collapse = " "))
+
+glimpse(lemma_tweets)
+
+```
+
+- Calculate the sentiment score using the Bing dictionary
+
+```{r}
+
+lemma_tweets$bing_sent <- get_sentiment(lemma_tweets$tweet, 
+                                        method="bing")
+lemma_tweets$afinn_sent <- get_sentiment(lemma_tweets$tweet, 
+                                        method="afinn")
+
+lemma_tweets %>%
+  group_by(month = month(date), year = year(date)) %>%
+  summarize(bing_sent = mean(bing_sent),
+            afinn_sent = mean(afinn_sent)) %>%
+  mutate(date = as.Date(paste0(1, "/", month, "/", year),format = "%d/%m/%Y")) %>%
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = bing_sent), color = "darkred") + 
+  geom_line(aes(y = afinn_sent), color="steelblue") +
+  xlab(NULL) +
+  ylab("Average Monthly Sentiment") +
+  labs(title = "Average Monthly Sentiment of Trump's Tweet") +
+  theme_bw()
+
+```
+
+## Supervised Learning
+
+```{r}
+
+uscongress <- read_delim("https://raw.githubusercontent.com/uc-cfss/rcfss/master/data-raw/USCongress.csv",
+                         delim = ";")
+
+major_topics <- tibble(
+  major = c(1:10, 12:21, 99),
+  label = c("Macroeconomics", "Civil rights, minority issues, civil liberties",
+            "Health", "Agriculture", "Labor and employment", "Education", "Environment",
+            "Energy", "Immigration", "Transportation", "Law, crime, family issues",
+            "Social welfare", "Community development and housing issues",
+            "Banking, finance, and domestic commerce", "Defense",
+            "Space, technology, and communications", "Foreign trade",
+            "International affairs and foreign aid", "Government operations",
+            "Public lands and water management", "Other, miscellaneous")
+)
+
+uscongress <- as_tibble(uscongress) %>%
+    mutate(text = as.character(text)) %>%
+    left_join(major_topics)
+
+congress_tokens <- uscongress %>%
+  unnest_tokens(output = word, input = text) %>%
+  filter(!word %in% stop_words$word,
+         !word %in% str_remove_all(string = stop_words$word, pattern =  "'"),
+         str_detect(word, "[a-z]")) %>%
+  mutate(word = stringr::str_squish(word)) %>%
+  mutate(word = stringr::str_remove_all(word, "[[:digit:]]")) %>%
+  mutate(word = stringr::str_remove_all(word, "[[:punct:]]")) %>%
+  mutate(word = stringr::str_trim(word, side = "both")) %>%
+  filter(!word %in% c("xviii","xix")) %>%
+  mutate(lemma = textstem::lemmatize_words(word))
+
+```
+
+- Cast to DTM
+
+```{r}
+
+congress_dtm <- congress_tokens %>%
+  count(ID, word) %>%
+  cast_dtm(document = ID, term = word, value = n)
+
+```
+
+- Remove sparse terms using the `tm` package. Use `sparse = n` to remove tokens that are missing from more than n documents, so the tokens need to appear in 1-n documents.
+
+```{r}
+
+congress_dtm <- removeSparseTerms(congress_dtm, sparse = .95)
+
+```
+
+- Explore what terms are associated with what labels by treating labels as documents and term frequency inverse document frequency (tf-idf) - which adjusts for how rarely a term is used, not just its count. We will visualize  the relationship between these tokens and the labels using this measure.
+
+```{r}
+
+congress_tokens %>%
+  count(label, word) %>%
+  bind_tf_idf(term = word, document = label, n = n) %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) %>%
+  filter(label %in% c("Macroeconomics",
+                      "Civil rights, minority issues, civil liberties",
+                      "Health", "Education")) %>%
+  group_by(label) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder_within(word, tf_idf, label)) %>%
+  ggplot(aes(word, tf_idf)) +
+  geom_col() +
+  scale_x_reordered() +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~ label, scales = "free") +
+  coord_flip()
+
+```
+
+- Estimate model
+
+```{r}
+
+congress_rf <- train(x = as.matrix(congress_dtm),
+                     y = factor(uscongress$major),
+                     method = "ranger",
+                     num.trees = 200,
+                     importance = "impurity",
+                     trControl = trainControl(method = "oob"))
+
+congress_rf$finalModel
+
+```
+
+- Inspect most important predictors
+
+```{r}
+
+congress_rf$finalModel %>%
+  # extract variable importance metrics
+  ranger::importance() %>%
+  # convert to a data frame
+  enframe(name = "variable", value = "varimp") %>%
+  top_n(n = 20, wt = varimp) %>%
+  # plot the metrics
+  ggplot(aes(x = fct_reorder(variable, varimp), y = varimp)) +
+  geom_col() +
+  coord_flip() +
+  labs(x = "Token",
+       y = "Variable importance (ordered by importance)")
+
+```
+
+## Structural Topic Model
+
+```{r}
+
+# cmu_blogs <- readtext("https://uclspp.github.io/datasets/data/poliblogs2008.zip")
+
+# cmu_blogs <- corpus(cmu_blogs$documents, docvars = cmu_blogs)
+
+# cmu_blogs <- dfm(cmu_blogs,
+#                  stem = TRUE,
+#                  remove = stopwords("english"),
+#                  remove_punct = TRUE,
+#                  remove_numbers = TRUE)
+
+# cmu_blogs_stm <- convert(cmu_blogs, to = "stm", docvars = docvars(cmu_blogs))
+
+# stm_object <- stm(documents = cmu_blogs_stm$documents,
+#                     vocab = cmu_blogs_stm$vocab,
+#                     data = cmu_blogs_stm$meta,
+#                     prevalence = ~rating + s(day),
+#                     K = 20,
+#                     seed = 123)
+
+```
+
+
+
