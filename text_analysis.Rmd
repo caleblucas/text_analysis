@@ -222,24 +222,7 @@ lemma_tweets %>%
 
 ```{r}
 
-uscongress <- read_delim("https://raw.githubusercontent.com/uc-cfss/rcfss/master/data-raw/USCongress.csv",
-                         delim = ";")
-
-major_topics <- tibble(
-  major = c(1:10, 12:21, 99),
-  label = c("Macroeconomics", "Civil rights, minority issues, civil liberties",
-            "Health", "Agriculture", "Labor and employment", "Education", "Environment",
-            "Energy", "Immigration", "Transportation", "Law, crime, family issues",
-            "Social welfare", "Community development and housing issues",
-            "Banking, finance, and domestic commerce", "Defense",
-            "Space, technology, and communications", "Foreign trade",
-            "International affairs and foreign aid", "Government operations",
-            "Public lands and water management", "Other, miscellaneous")
-)
-
-uscongress <- as_tibble(uscongress) %>%
-    mutate(text = as.character(text)) %>%
-    left_join(major_topics)
+uscongress <- read_csv("https://www.dropbox.com/s/s3vxn51ev1u35iy/uscongress.csv?dl=1")
 
 congress_tokens <- uscongress %>%
   unnest_tokens(output = word, input = text) %>%
